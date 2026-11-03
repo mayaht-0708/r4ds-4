@@ -2,4 +2,119 @@
 title: "Crypto Markets"
 author: "Mayah T."
 format: html
+execute:
+  echo: false
 ---
+
+```{r}
+#| message: false
+library(tidyverse)
+library(arrow)
+```
+
+```{r}
+print(arrow::open_dataset("data/daily_prices.parquet")$schema)
+```
+
+```{r}
+arrow::open_dataset("data/daily_prices.parquet") |>
+  dplyr::slice_sample(n = 10) |>
+  dplyr::collect()
+```
+
+```{r}
+arrow::open_dataset("data/daily_prices.parquet") |>
+  dplyr::filter(date_raw >= "2025-01-01") |>
+  dplyr::group_by(coin_id) |>
+  dplyr::summarise(avg_market_cap_usd = mean(market_cap_usd, na.rm = TRUE)) |>
+  dplyr::arrange(dplyr::desc(avg_market_cap_usd)) |>
+  dplyr::collect()
+```
+
+```{r}
+#| cache: true
+prices <- arrow::read_parquet("data/daily_prices.parquet")
+metadata <- arrow::read_parquet("data/coin_metadata.parquet")
+categories <- arrow::read_parquet("data/categories.parquet")
+
+crypto <- prices |>
+  dplyr::mutate(date = as.Date(date_raw)) |>
+  dplyr::left_join(metadata, by = "coin_id") |>
+  dplyr::left_join(
+    dplyr::rename(categories, category_description = description),
+    by = "category_id"
+  )
+```
+
+```{r}
+metadata |>
+  dplyr::mutate(
+    launch_date_parsed = as.Date(lubridate::parse_date_time(
+      launch_date,
+      orders = c("B d, Y", "Y-m-d"),
+      quiet = TRUE
+    ))
+  ) |>
+  dplyr::arrange(launch_date_parsed) |>
+  dplyr::select(coin_id, coin_name, launch_date, launch_date_parsed)
+```
+
+```{r}
+prices |>
+  dplyr::filter(coin_id == "btc") |>
+  ggplot2::ggplot(ggplot2::aes(x = as.Date(date_raw), y = price_usd)) +
+  ggplot2::geom_line() +
+  ggplot2::labs(x = "Date", y = "Price (USD)", title = "Bitcoin Daily Price")
+```
+
+```{r}
+crypto |>
+  dplyr::group_by(date, category_name) |>
+  dplyr::summarise(category_market_cap = sum(market_cap_usd, na.rm = TRUE), .groups = "drop") |>
+  dplyr::group_by(date) |>
+  dplyr::mutate(market_cap_share = category_market_cap / sum(category_market_cap, na.rm = TRUE)) |>
+  dplyr::ungroup() |>
+  dplyr::mutate(
+    category_name = forcats::fct_reorder(
+      category_name,
+      category_market_cap,
+      .fun = median,
+      .desc = TRUE
+    )
+  ) |>
+  ggplot2::ggplot(ggplot2::aes(x = date, y = market_cap_share, fill = category_name)) +
+  ggplot2::geom_area() +
+  ggplot2::geom_rect(
+    data = tibble::tribble(
+      ~xmin, ~xmax, ~label,
+      as.Date("2022-05-07"), as.Date("2022-05-12"), "Luna/UST crash",
+      as.Date("2022-11-08"), as.Date("2022-11-11"), "FTX collapse"
+    ),
+    ggplot2::aes(xmin = xmin, xmax = xmax, ymin = 0, ymax = 1),
+    inherit.aes = FALSE,
+    fill = "grey20",
+    alpha = 0.16
+  ) +
+  ggplot2::geom_text(
+    data = tibble::tribble(
+      ~date, ~label,
+      as.Date("2022-05-09"), "Luna/UST crash",
+      as.Date("2022-11-09"), "FTX collapse"
+    ),
+    ggplot2::aes(x = date, y = 0.97, label = label),
+    inherit.aes = FALSE,
+    angle = 90,
+    hjust = 1,
+    size = 3
+  ) +
+  ggplot2::labs(
+    x = "Date",
+    y = "Share of total crypto market cap",
+    fill = "Category (median size, largest first)",
+    title = "How Crypto Market Capitalization Is Distributed",
+    subtitle = "Daily share of total market cap represented by each coin category",
+    caption = "Source: Crypto market data provided with this analysis."
+  ) +
+  ggplot2::scale_y_continuous(labels = scales::label_percent()) +
+  ggplot2::scale_fill_viridis_d(option = "cividis", direction = 1)
+```
